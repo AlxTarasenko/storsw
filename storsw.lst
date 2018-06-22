@@ -1,0 +1,8 @@
+IP login password StorageName RoomName LvoDS
+IP login password StorageName RoomName MSA
+IP login password StorageName RoomName NAp
+IP none SMcli StorageName RoomName DS
+IP none SMcli StorageName RoomName DPV
+IP login password StorageName RoomName SW
+IP login SSH StorageName RoomName SW
+IP xyratex_dump.log LOG StorageName RoomName Xyr
