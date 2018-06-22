@@ -2041,12 +2041,12 @@ then
     echo " end"
 fi
 
-if [[ -f "../smb/smbupload.sh" ]]
-then
-    echo "Upload to Inventory share.."
-    eval "../smb/smbupload.sh storsw $Fout $FoutXLS $Fout2 $Fout3"
-    echo "..end"
-fi
+#if [[ -f "../smb/smbupload.sh" ]]
+#then
+#    echo "Upload to Inventory share.."
+#    eval "../smb/smbupload.sh storsw $Fout $FoutXLS $Fout2 $Fout3"
+#    echo "..end"
+#fi
             
 if [[ -f $Ftmp ]]; then rm $Ftmp; fi
 if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
