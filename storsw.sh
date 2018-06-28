@@ -1,6 +1,10 @@
 #!/bin/bash
 #
+<<<<<<< HEAD
 # Version 3.9, as CSV
+=======
+# Version 3.92, as CSV
+>>>>>>> 361fc05b4e0df366f6b8af4baeeec369942216d5
 #
 # Usage: ./storsw.sh
 #
@@ -1920,28 +1924,32 @@ unset storsw
 
 if [[ -f $Fadd ]]
 then 
+<<<<<<< HEAD
     cat $Fadd | tail -n +2 >> $Fout; 
+=======
+    echo -n "Merge with file $Fadd ..."
+    cat $Fadd | tail -n +2 >> $Fout; 
+    echo " end"
+>>>>>>> 361fc05b4e0df366f6b8af4baeeec369942216d5
 fi
 
-if [[ -f "$Ftmp.wwnhost" ]]
+echo "Processing:"
+if [[ -f "$Ftmp.wwnhost" ]] && [[ -f "../sansw/sansw_rep.csv" ]]
 then 
-    echo -n "Proccessing WWN and HostName..."
-    # make backup
-    #cp "$Ftmp.wwnhost" "$Fout3.wwnhost"
-    
+    echo -n "Check SAN PortName and HostName..."
+
     #-------------------------------------------
     # Check SAN PortName and HostName on Storage
-    if [[ -f "../sansw/sansw_rep.csv" ]]
-    then
-        if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
+    if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
 
-	index=0
-	declare -a wh
-	while read line; do
-    	    wh[$index]="$line"
-	    index=$(($index+1))
-	done < "$Ftmp.wwnhost"
+    index=0
+    declare -a wh
+    while read line; do
+	wh[$index]="$line"
+	index=$(($index+1))
+    done < "$Ftmp.wwnhost"
     
+<<<<<<< HEAD
 	for ((b=0; b < ${#wh[*]}; b++))
 	do
     	    str="${wh[$b]}"
@@ -1974,43 +1982,83 @@ then
     		if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
     		if [[ $xl -lt 8  ]]; then x="${x}\t"; fi
     		sanSwitch="$x"
+=======
+    for ((b=0; b < ${#wh[*]}; b++))
+    do
+	str="${wh[$b]}"
+    	    
+    	hostWWN=`echo "$str" | cut -f1`
+    	hostName=`echo "$str" | cut -f2`
+    	hostStor=`echo "$str" | cut -f3`; hostStor=${hostStor//","/", "}
+	    
+	#sansw.sh - Room,Fabric+,Switch Name+,Domen+,IP,Switch WWN,Model,Firmware,Serial#,Config,Port#+,Port Name,Speed+,Status,State,Type,WWN,WWPN,Alias,Zone,SFP#+,Wave+,Vendor,Serial#,Speed
+    	title=$( cat "../sansw/sansw_rep.csv" | head -n 1 )
+    	pos=$(val2pos "$title" "," "Switch Name+")
+    	sanName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	pos=$(val2pos "$title" "," "Room")
+    	sanRoom=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	pos=$(val2pos "$title" "," "Port Name")
+    	sanPName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	pos=$(val2pos "$title" "," "Port#+")
+    	sanPNum=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	sanPNum="     $sanPNum"; sanPNum=${sanPNum:(${#sanPNum}-2)}
 
-    		x="[${sanPNum}] $sanPName"
-        	if [[ "$x" == "[  ] " ]]; then x="  -  "; fi
-        	xl=${#x}
-    		#if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    		#if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
-		if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
-    		if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
-    		if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
-    		if [[ $xl -lt 8  ]]; then x="${x}\t"; fi
-    		sanPName="$x"
+    	if [[ "$hostName" != "$sanPName" ]]
+    	then
+    	    x="${sanRoom}, ${sanName}"
+    	    if [[ "$x" == ", " ]]; then x="-"; fi
+    	    xl=${#x}
+    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
+    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
+	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 8  ]]; then x="${x}\t"; fi
+    	    sanSwitch="$x"
+>>>>>>> 361fc05b4e0df366f6b8af4baeeec369942216d5
+
+    	    x="[${sanPNum}] $sanPName"
+    	    if [[ "$x" == "[  ] " ]]; then x="  -  "; fi
+    	    xl=${#x}
+    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
+    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
+	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 8  ]]; then x="${x}\t"; fi
+    	    sanPName="$x"
     		
-    		x="$hostName"
-        	if [[ "$x" == "" ]]; then x="-"; fi
-        	xl=${#x}
-    		#if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    		#if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
-		if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
-    		if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
-    		if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
-    		if [[ $xl -lt 8  ]]; then x="${x}\t"; fi
-    		hostName="$x"
-    		
-    		echo -e "${sanSwitch}${sanPName}${hostName}$hostWWN, $hostStor" >> $Ftmp2
-    	    fi
-	done
-    
-	if [[ -f $Ftmp2 ]] 
-	then
-	    echo "Proccessing SAN PortName and HostName" >> $Fout3
-	    echo "-------------------------------------" >> $Fout3
-	    echo "" >> $Fout3
-	    cat $Ftmp2 >> $Fout3
-	    echo "" >> $Fout3
-	    echo "" >> $Fout3
+    	    x="$hostName"
+    	    if [[ "$x" == "" ]]; then x="-"; fi
+    	    xl=${#x}
+    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
+    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
+	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
+    	    if [[ $xl -lt 8  ]]; then x="${x}\t"; fi
+    	    hostName="$x"
+
+    	    echo -e "${sanSwitch}${sanPName}${hostName}$hostWWN, $hostStor" >> $Ftmp2
 	fi
+    done
+    
+    if [[ -f $Ftmp2 ]] 
+    then
+        echo "Processing SAN PortName and HostName" >> $Fout3
+        echo "------------------------------------" >> $Fout3
+        echo "" >> $Fout3
+        cat $Ftmp2 >> $Fout3
+        echo "" >> $Fout3
+        echo "" >> $Fout3
     fi
+
+    echo " end"
+fi
+
+if [[ -f "$Ftmp.wwnhost" ]]
+then 
+    echo -n "Check WWN and HostName..."
     
     #----------------------------------
     # Check WWN and HostName on Storage
@@ -2080,18 +2128,19 @@ then
     
     if [[ -f $Ftmp2 ]] 
     then
-	echo "Proccessing WWN and HostName" >> $Fout3
-	echo "----------------------------" >> $Fout3
+	echo "Processing WWN and HostName" >> $Fout3
+	echo "---------------------------" >> $Fout3
 	echo "" >> $Fout3
 	cat $Ftmp2 >> $Fout3
 	echo "" >> $Fout3
-	#echo "" >> $Fout3
+	echo "" >> $Fout3
     fi
 
     rm "$Ftmp.wwnhost"
     echo " end"
 fi
 
+echo "Post processing:"
 if [[ -f "../csv2xls/csv2xls.pl" ]]
 then 
     echo -n "Converting report file CSV to XLS..."
@@ -2110,7 +2159,11 @@ if [[ -f "../csv2mysql/csv2mysql.pl" ]]
 then
     # Room,Name+,IP,Firmware+,Capacity,Used,Free,WWNs,Ctrl#+,Ctrl WWPN,Speed,Status+,Encl#+,Status+,Type,PN#,Serial#,Slots,Speed,Encl#+,Bay#+,Status+,Type,Mode,Size,Speed+,PN#,Serial#,Disk Group,Status+,Size,Free,Volume Name,Status+,Size,WWID+,Mapping,Disk Group,Func+,Host Name,Status+,Ports+,WWPN,Mapping
     echo "Upload to MySQL base.."
+<<<<<<< HEAD
     #eval "../csv2mysql/csv2mysql.pl storsw_rep.csv stor \"Name+,Room\" \"stname,room\""
+=======
+    eval "../csv2mysql/csv2mysql.pl storsw_rep.csv storage \"Name+,Room\" \"field1,field2\""
+>>>>>>> 361fc05b4e0df366f6b8af4baeeec369942216d5
     echo "..end"
 fi
 
