@@ -1,16 +1,44 @@
 #!/bin/bash
 #
-# Version 3.5, as CSV
+# Version 3.9, as CSV
 #
-# Usage: storsw.sh
+# Usage: ./storsw.sh
 #
-# The program inventory storages and export to CSV file.
+# The program inventory Storages and export to CSV file, with crosscheck by SAN inventory (my script - sansw.sh).
+# I use this script with freeware Stor2RRD (Storage and SAN monitoring tool), install to /home/stor2rrd/storsw/, owner stor2rrd.
+# *) run only by stor2rrd (SMcli auto reconfigure to runner user)
+#
+# Uses config file - storsw.lst with structure: IP Login Password StorageName Room KEY
+# where KEY is:
+#	LvoDS 	- Lenovo (DotHill) DS2200
+#		ex. by default: IP manage Password Name Room MSA
+#	MSA 	- HP MSA (DotHill) P2000G3 
+#		ex. by default: IP manage \!manage Name Room MSA
+#	NAp	- NetApp 7-mode (N6240)
+#		ex. by stor2rrd user: IP stor2rrd Password Name Room NAp
+#	DS	- IBM DS5K (DS3512)
+#		ex. by stor2rrd uses SMcli: IP none SMcli Name Room DS
+#	DPV	- Dell PowerVault (PV3820f)
+#		ex. by stor2rrd uses SMcli: IP none SMcli Name Room DPV
+#	SW	- IBM (Lenovo) Storwize (v3700, v5000, v5030, v7000)
+#		ex. by SSH login: IP superuser Password Name Room SW
+#		ex. by stor2rrd uses SSH public key: IP stor2rrd SSH Name Room SW
+#	Xyr	- Xyratex (by dump file)
+#		ex. by dump log file: IP xyratex_dump.log LOG Name Room Xyr
+#
+# Rules:
+# 1) For HP MSA P2000, Lenovo DS2200 host (initiator) name as: HostName_A and HostName_B
+# 2) Host(Storage), Port(SAN) and Alias(SAN) - need equal
+# 3) If exist file storsw_addon.csv, it addon to END of report CSV file (without first row (titles of columns))
+#    For summary report by script and other system (ex. hand make)
 #
 # 06/2018, Alexey Tarasenko, atarasenko@mail.ru
+#
 #
 # ToDo: 
 # 1. LenDS - volume, DiskGroupName as PoolName, not DiskGroupName
 #
+
 
 Fout="storsw_rep.csv"
 FoutXLS="storsw_rep.xls"
@@ -37,6 +65,21 @@ while read line; do
     storsw[$index]="$line"
     index=$(($index+1))
 done < storsw.lst
+
+
+val2pos() {
+    local string="$1"
+    local delimiter="$2"
+    local value="$3"
+    local index=1
+    if [ -n "$string" ]; then
+        local part
+        while read -d "$delimiter" part; do
+            if [[ "$part" == "$value" ]]; then echo -n $index; break; fi
+            index=$(($index+1))
+        done <<< "$string"
+    fi
+}
 
 
 trim() {
@@ -302,7 +345,7 @@ kb2gb() {
 #	-o UserKnownHostsFile=/dev/null		pass if remote host key renewed, and add it to non exist file [know_hosts]
 #	-o StrictHostKeyChecking=no		pass cheking remote host key in ~/.ssh/know_hosts, when first time session
 
-echo "Room,Name+,IP,Firmware+,Capacity,Used,Free,WWNs,Ctrl#+,WWPN,Speed,Status+,Encl#+,Status+,Type,PN#,Serial#,Slots,Speed,Encl#+,Bay#+,Status+,Type,Mode,Size,Speed+,PN#,Serial#,Disk Group,Status+,Size,Free,Volume Name,Status+,Size,WWID+,Mapping,Disk Group,Func+,Host Name,Status+,Ports+,WWPN,Mapping" > $Fout
+echo "Room,Name+,IP,Firmware+,Capacity,Used,Free,WWNs,Ctrl#+,Ctrl WWPN,Speed,Status+,Encl#+,Status+,Type,PN#,Serial#,Slots,Speed,Encl#+,Bay#+,Status+,Type,Mode,Size,Speed+,PN#,Serial#,Disk Group,Status+,Size,Free,Volume Name,Status+,Size,WWID+,Mapping,Disk Group,Func+,Host Name,Status+,Ports+,WWPN,Mapping" > $Fout
 for ((a=0; a < ${#storsw[*]}; a++))
 do
 #continue;
@@ -879,8 +922,12 @@ do
     		srv_vols=${srv_vols//";"/"; "}
 		
     		#prepare WWN-Host info for processing
+		# proccessing HostName_A or HostName_B
+		srv_name2="$srv_name"; sufix="";
+    		if [[ ${#srv_name2} -gt 2 ]]; then sufix=${srv_name2:(${#srv_name2}-2)}; fi
+    		if [[ "$sufix" == "_A" ]] || [[ "$sufix" == "_B" ]]; then srv_name2=${srv_name2:0:${#srv_name2}-2}; fi
     		declare -a wh=(${srv_wwn//";"/""})
-    		for ((c=0; c < ${#wh[*]}; c++)); do echo -e "${wh[$c]}\t$srv_name\t$part0" >> "$Ftmp.wwnhost"; done
+    		for ((c=0; c < ${#wh[*]}; c++)); do echo -e "${wh[$c]}\t$srv_name2\t$part0" >> "$Ftmp.wwnhost"; done
 		unset wh
 		
 		unset str    
@@ -1871,7 +1918,10 @@ do
 done
 unset storsw
 
-if [[ -f $Fadd ]]; then cat $Fadd >> $Fout; fi
+if [[ -f $Fadd ]]
+then 
+    cat $Fadd | tail -n +2 >> $Fout; 
+fi
 
 if [[ -f "$Ftmp.wwnhost" ]]
 then 
@@ -1895,13 +1945,21 @@ then
 	for ((b=0; b < ${#wh[*]}; b++))
 	do
     	    str="${wh[$b]}"
+    	    
     	    hostWWN=`echo "$str" | cut -f1`
     	    hostName=`echo "$str" | cut -f2`
     	    hostStor=`echo "$str" | cut -f3`; hostStor=${hostStor//","/", "}
-    	    sanName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f3`
-    	    sanRoom=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f1`
-    	    sanPName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f12`
-    	    sanPNum=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f11`
+	    
+	    #sansw.sh - Room,Fabric+,Switch Name+,Domen+,IP,Switch WWN,Model,Firmware,Serial#,Config,Port#+,Port Name,Speed+,Status,State,Type,WWN,WWPN,Alias,Zone,SFP#+,Wave+,Vendor,Serial#,Speed
+    	    title=$( cat "../sansw/sansw_rep.csv" | head -n 1 )
+    	    pos=$(val2pos "$title" "," "Switch Name+")
+    	    sanName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	    pos=$(val2pos "$title" "," "Room")
+    	    sanRoom=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	    pos=$(val2pos "$title" "," "Port Name")
+    	    sanPName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
+    	    pos=$(val2pos "$title" "," "Port#+")
+    	    sanPNum=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
     	    sanPNum="     $sanPNum"; sanPNum=${sanPNum:(${#sanPNum}-2)}
 
     	    if [[ "$hostName" != "$sanPName" ]]
@@ -2041,17 +2099,26 @@ then
     echo " end"
 fi
 
-#if [[ -f "../smb/smbupload.sh" ]]
-#then
-#    echo "Upload to Inventory share.."
-#    eval "../smb/smbupload.sh storsw $Fout $FoutXLS $Fout2 $Fout3"
-#    echo "..end"
-#fi
+if [[ -f "../smb/smbupload.sh" ]]
+then
+    echo "Upload to Inventory share.."
+    eval "../smb/smbupload.sh storsw $Fout $FoutXLS $Fout2 $Fout3"
+    echo "..end"
+fi
             
+if [[ -f "../csv2mysql/csv2mysql.pl" ]]
+then
+    # Room,Name+,IP,Firmware+,Capacity,Used,Free,WWNs,Ctrl#+,Ctrl WWPN,Speed,Status+,Encl#+,Status+,Type,PN#,Serial#,Slots,Speed,Encl#+,Bay#+,Status+,Type,Mode,Size,Speed+,PN#,Serial#,Disk Group,Status+,Size,Free,Volume Name,Status+,Size,WWID+,Mapping,Disk Group,Func+,Host Name,Status+,Ports+,WWPN,Mapping
+    echo "Upload to MySQL base.."
+    #eval "../csv2mysql/csv2mysql.pl storsw_rep.csv stor \"Name+,Room\" \"stname,room\""
+    echo "..end"
+fi
+
 if [[ -f $Ftmp ]]; then rm $Ftmp; fi
 if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
 if [[ -f $FtmpC ]]; then rm $FtmpC; fi
 if [[ -f $FtmpV ]]; then rm $FtmpV; fi
+
 #if [[ -f $Flog ]]; then rm $Flog; fi
 
 exit;
