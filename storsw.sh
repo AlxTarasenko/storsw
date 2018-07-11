@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Version 3.92, as CSV
+# Version 4.5
 #
 # Usage: ./storsw.sh
 #
@@ -28,9 +28,10 @@
 #
 # Rules:
 # 1) For HP MSA P2000, Lenovo DS2200 host (initiator) name as: HostName_A and HostName_B
-# 2) Host(Storage), Port(SAN) and Alias(SAN) - need equal
-# 3) If exist file storsw_addon.csv, it addon to END of report CSV file (without first row (titles of columns))
-#    For summary report by script and other system (ex. hand make)
+# 2) Host(Storage), Port(SAN) and Alias(SAN) need equal, not applicable to NPIV
+# 3) Out CSV file for export to DataBase (storsw_db.csv)
+# 4) If exist file storsw_addon.csv, it merge to END of report CSV file (without first row (titles of columns)). For mix report by script and other systems
+# 5) If exist file storsw_db_addon.csv, it merge to END of report CSV file for DataBase (without first row (titles of columns))
 #
 # 06/2018, Alexey Tarasenko, atarasenko@mail.ru
 #
@@ -40,25 +41,47 @@
 #
 
 
+source "../lib_sw/lib_main.sh"
+source "../lib_sw/lib_storage.sh"
+
+Fsansw="../sansw/sansw_rep.csv"
+
 Fout="storsw_rep.csv"
-FoutXLS="storsw_rep.xls"
+FoutDB="storsw_db.csv"
 Fout2="storsw_stor2rrd.txt"
 Fout3="storsw_rep.txt"
+FoutXLS="storsw_rep.xls"
+FoutDBXLS="storsw_db.xls"
 Fadd="storsw_addon.csv"
+FaddDB="storsw_db_addon.csv"
 Flog="storsw.log"
-Ftmp="/tmp/storsw_tmp.txt"
-Ftmp2="/tmp/storsw_tmp2.txt"
-FtmpC="/tmp/storsw_tmpC.txt"
-FtmpV="/tmp/storsw_tmpV.txt"
 
-#echo -n > $Flog
-#echo -n > $Fout3
+Ftmp="storsw.tmp"
+Ftmp2="storsw.tmp2"
+FtmpC="storsw.tmpC"
+FtmpV="storsw.tmpV"
+
+curdate=$( date +"%d/%m/%Y %H:%M" )
 
 if [[ -f $Fout ]]; then rm $Fout; fi
-if [[ -f $FoutXLS ]]; then rm $FoutXLS; fi
+if [[ -f $FoutDB ]]; then rm $FoutDB; fi
 if [[ -f $Fout2 ]]; then rm $Fout2; fi
 if [[ -f $Fout3 ]]; then rm $Fout3; fi
+if [[ -f $FoutXLS ]]; then rm $FoutXLS; fi
+if [[ -f $FoutDBXLS ]]; then rm $FoutDBXLS; fi
 if [[ -f $Flog ]]; then rm $Flog; fi
+
+if [[ -f $Ftmp ]]; then rm $Ftmp; fi
+if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
+if [[ -f $FtmpC ]]; then rm $FtmpC; fi
+if [[ -f $FtmpV ]]; then rm $FtmpV; fi
+
+if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
+if [[ -f "$Ftmp.volwwn" ]]; then rm "$Ftmp.volwwn"; fi
+if [[ -f "$Ftmp.host" ]]; then rm "$Ftmp.host"; fi
+if [[ -f "$Ftmp.array" ]]; then rm "$Ftmp.array"; fi
+if [[ -f "$Ftmp.cmd" ]]; then rm "$Ftmp.cmd"; fi
+if [[ -f "$Ftmp.wwnhost" ]]; then rm "$Ftmp.wwnhost"; fi
 
 index=0
 while read line; do
@@ -66,273 +89,6 @@ while read line; do
     index=$(($index+1))
 done < storsw.lst
 
-
-val2pos() {
-    local string="$1"
-    local delimiter="$2"
-    local value="$3"
-    local index=1
-    if [ -n "$string" ]; then
-        local part
-        while read -d "$delimiter" part; do
-            if [[ "$part" == "$value" ]]; then echo -n $index; break; fi
-            index=$(($index+1))
-        done <<< "$string"
-    fi
-}
-
-
-trim() {
-    local var="$*"
-    # remove leading whitespace characters
-    var="${var#"${var%%[![:space:]]*}"}"
-    # remove trailing whitespace characters
-    var="${var%"${var##*[![:space:]]}"}"
-    echo -n "$var"
-}
-
-
-# for DotHill (P2000, DS2200)
-tableconv() {
-    #tableconv $Ftmp "Vdisk;Name;Size;WWN"
-    local file="$1"
-    local headlst="$2"
-    local header=(${headlst//";"/" "})
-    local str_len=`grep "\-\-\-\-\-\-\-\-\-\-" $file | wc -c`
-    str_len=$(($str_len-1))
-    grep "\-\-\-\-\-\-\-\-\-\-" -B 100 $file  | head -n -1 > "$file.head"
-    grep "\-\-\-\-\-\-\-\-\-\-" -A 1000 $file | tail -n +2 > "$file.data"
-
-    echo -n "" > "$file.result"
-    #echo "StrLen: $str_len" >> "$file.result"
-
-    local index=0
-    while read 
-    do
-	headline[$index]=${REPLY}
-	#echo "Head line: ${headline[$index]}" >> "$file.result"
-        index=$(($index+1))
-    done < "$file.head"
-    
-    local a=0
-    local b=0
-    local c=0
-    local d=0
-    local headwrd=""
-    local headwrdlen=0
-    local substr=""
-    local subchar=""
-    declare -a headstr
-    declare -a headstart
-    declare -a headend
-        
-    # Proccessing Head for find Line:Start:End of ValueName
-    #echo "Head lines: ${#headline[*]}" >> "$file.result"
-    for ((a=0; a < ${#header[*]}; a++))
-    do
-	local seached=0
-	headwrd=${header[$a]}
-	headwrd=${headwrd//"_"/" "}
-	headwrdlen=${#headwrd}
-
-	#printf "id:%d name:\"%s\" len:%d\n" $a "$headwrd" $headwrdlen >> "$file.result"
-        for ((b=0; b < ${#headline[*]}; b++))
-	do
-	    headstr[$a]=$b
-	    local headstrlen=${#headline[$b]}
-	    local scanend=$(($headstrlen-$headwrdlen+1))
-	
-	    #printf "istr:%d str:\"%s\" len:%d end:%d\n" $b "${headline[$b]}" $headstrlen $scanend >> "$file.result"
-	    for ((c=0; c < $scanend; c++))
-	    do
-		substr=${headline[$b]:$c:$headwrdlen}
-		if [[ "$substr" ==  "$headwrd" ]] 
-		then 
-		    headstart[$a]=$c
-		    headend[$a]=$(($c+$headwrdlen-1))
-		    # borders of ColumnName, start and end as started 0 index of string
-		    #printf "id:%d name:\"%s\" l:%d s:%d e:%d\n" $a "$headwrd" ${headstr[$a]} ${headstart[$a]} ${headend[$a]} >> "$file.result"
-		    for ((d=$((${headend[$a]}+1)); d < $headstrlen; d++))
-		    do
-			    subchar=${headline[$b]:$d:1}
-			    if [[ "$subchar" == " " ]]
-			    then
-				headend[$a]=$((${headend[$a]}+1))
-			    else
-				break
-			    fi
-		    done
-		    # if last in line, set length as header line "----------"
-		    if [[ $d == $headstrlen ]]; then headend[$a]=$(($str_len-1)); fi
-		    
-		    #printf "id:%d name:\"%s\" l:%d s:%d e:%d\n" $a "$headwrd" ${headstr[$a]} ${headstart[$a]} ${headend[$a]} >> "$file.result"
-		    seached=1
-		    break
-		fi
-		#printf "sub:\"%s\" seach:\"%s\"\n" "$substr" "$headwrd" >> "$file.result"
-	    done
-	    # if find, not need proccess next lines
-	    if [[ $seached == 1 ]]; then break; fi
-	done
-        # If NOT find, unset header element
-        if [[ $seached == 0 ]]; then unset header[$a]; fi
-    done
-
-    index=0
-    while read 
-    do
-	dataline[$index]=${REPLY}
-	echo "Data line: ${dataline[$index]}" >> "$file.result"
-        index=$(($index+1))
-    done < "$file.data"
-        
-
-    #echo "Proccess Data lines: ${#dataline[*]} Each: ${#headline[*]}" >> "$file.result"
-    echo -n > "$file"
-    for (( b=0; b < ${#dataline[*]}; b=$(($b+${#headline[*]})) ))
-    do
-        local datastr=""
-        for ((a=0; a < ${#header[*]}; a++))
-	do
-	    #string id with shift
-	    c=$(($b+${headstr[$a]}))
-	    #param length
-	    d=$((${headend[$a]}-${headstart[$a]}+1))
-	    #echo "Line: $c Start:${headstart[$a]} Count:$d" >> "$file.result"
-	    substr="${dataline[$c]:${headstart[$a]}:$d}"; substr=$( trim "$substr" )
-	    datastr="${datastr};${substr}"
-	done
-	datastr="${datastr:1:(${#datastr}-1)}"
-	echo "$datastr" >> "$file"
-    done
-    
-    unset headstr
-    unset headstart
-    unset headend
-    unset headline
-    unset dataline
-    if [[ -f "$file.result" ]]; then rm "$file.result"; fi
-    if [[ -f "$file.head" ]]; then rm "$file.head"; fi
-    if [[ -f "$file.data" ]]; then rm "$file.data"; fi
-}
-
-        
-# for Stor2RRD
-getpart() {
-    local fout=$1
-    local fname=$2
-    local title=$3
-
-    cat "$fname" | grep -A 1000 "$title" | tail -n +3 > "$fout"
-
-    declare -a strings
-    local index=0
-    local str=""
-    
-    #Run down to next section, without empty strings
-    while read str; do
-        strings[$index]="$str"
-        index=$(($index+1))
-    done < "$fout"
-
-    if [[ -f $fout ]]; then rm $fout; fi
-    local a=0
-    for ((a=0; a < $index; a++))
-    do
-	str=$( trim "${strings[$a]}" )
-	if [[ "${str:0:9}" != "---------" ]]
-	then
-	    if [[ "$str" != "" ]]; then echo "${strings[$a]}" >> "$fout"; fi
-	else
-	    a+=1000
-	fi
-    done
-
-    #Run down without last string
-    local index=0
-    while read str; do
-        strings[$index]="$str"
-        index=$(($index+1))
-    done < "$fout"
-
-    if [[ -f $fout ]]; then rm $fout; fi
-    local a=0
-    index=$(($index-1))
-    for ((a=0; a < $index; a++))
-    do 
-	str=$( trim "${strings[$a]}" )
-	echo "$str" >> "$fout"; 
-    done
-
-    unset strings
-}
-
-
-# for NetApp
-value64bit() {
-    local power32=4294967296
-    local value64high=$1
-    local value64low=$2
-    local value=0
-    
-    #v1
-    value=$value64low
-    if [[ "$value64low" -lt "0" ]]
-    then 
-    	value=$(((($value64high+1)*$power32)+$value))
-    else 
-    	value=$((($value64high*$power32)+$value))
-    fi
-    #v2
-    #if [[ "$value64low" < "0" ]]
-    #then 
-    #	value=$(($power32+$value64low))
-    #else 
-    #	value=$(($value64low))
-    #fi
-    #value=$(($value+$value64high*$power32))
-
-    echo -n "$value"
-}
-
-
-# for NetApp
-b2kb() {
-    local value=$1
-    local fix=$2
-    local mul=1
-    local div=1
-    local a=0
-    
-    for ((a=0; a < $fix; a++))
-    do
-	mul=$(($mul*10))	
-    done
-    div=$(($div*1024))
-    
-    echo $(($value*mul/$div)) | sed "s/\([0-9]\{$fix\}$\)/.\1/"
-}
-
-
-# for NetApp
-kb2gb() {
-    local value=$1
-    local fix=$2
-    local mul=1
-    local div=1
-    local a=0
-    
-    for ((a=0; a < $fix; a++))
-    do
-	mul=$(($mul*10))	
-    done
-    div=$(($div*1024*1024))
-    
-    echo $(($value*mul/$div)) | sed "s/\([0-9]\{$fix\}$\)/.\1/"
-}
-
-
-# MAIN
 
 #SSH client parameters and options
 #	-T					terminal off
@@ -345,10 +101,11 @@ kb2gb() {
 #	-o UserKnownHostsFile=/dev/null		pass if remote host key renewed, and add it to non exist file [know_hosts]
 #	-o StrictHostKeyChecking=no		pass cheking remote host key in ~/.ssh/know_hosts, when first time session
 
-echo "Room,Name+,IP,Firmware+,Capacity,Used,Free,WWNs,Ctrl#+,Ctrl WWPN,Speed,Status+,Encl#+,Status+,Type,PN#,Serial#,Slots,Speed,Encl#+,Bay#+,Status+,Type,Mode,Size,Speed+,PN#,Serial#,Disk Group,Status+,Size,Free,Volume Name,Status+,Size,WWID+,Mapping,Disk Group,Func+,Host Name,Status+,Ports+,WWPN,Mapping" > $Fout
+echo "Date&Time  $curdate"
+echo "Date,Room,Name+,IP,Firmware+,Capacity-,Used-,Free-,WWN,Ctrl#+,Ctrl WWPN,Ctrl Speed+,Ctrl Status+,Encl#+,Encl Status+,Encl Type,Encl PN#,Encl Serial#,Slots,Bkpl Speed,Disk Encl#+,Disk Bay#+,Disk Status+,Disk Type,Disk Mode,Disk Size,Disk Speed+,Disk PN#,Disk Serial#,Disk Group,DG Status+,DG Size,DG Free,Volume Name,Vol Status+,Vol Size,Volume WWID+,Volume Mapping,Vol DG,Func+,Host Name,Host Status+,Ports+,Device WWPN,Host Mapping" > $Fout
+echo "Date,Room,Name+,IP,Firmware+,Capacity-,Used-,Free-,WWN,Ctrl#+,Ctrl WWPN,Ctrl Speed+,Ctrl Status+,Encl#+,Encl Status+,Encl Type,Encl PN#,Encl Serial#,Slots,Bkpl Speed,Disk Encl#+,Disk Bay#+,Disk Status+,Disk Type,Disk Mode,Disk Size,Disk Speed+,Disk PN#,Disk Serial#,Disk Group,DG Status+,DG Size,DG Free,Volume Name,Vol Status+,Vol Size,Volume WWID+,Volume Mapping,Vol DG,Func+,Host Name,Host Status+,Ports+,Device WWPN,Host Mapping" > $FoutDB
 for ((a=0; a < ${#storsw[*]}; a++))
 do
-#continue;
     declare -a item="( ${storsw[$a]} )"
 
     Fip="${item[0]}"
@@ -358,7 +115,9 @@ do
     Froom="${item[4]}"
     Fkey="${item[5]}"
 
-    part0=","
+    echo -n "Processing $Fname..."
+
+    part0=",,"
     part1=",,,,,"
     part2=",,,"
     part3=",,,,,,"
@@ -370,18 +129,30 @@ do
     st_name=""
     st_ip=""
     st_os=""
+    st_wwn=""
     st_size=""
     st_use=""
     st_free=""
-    st_wwns=""
+    st_sizeKB=""
+    st_useKB=""
+    st_freeKB=""
 
-
-    # Processing Stor2RRD config.html files
+    
+# Processing Stor2RRD config.html files
     #Fcfg="/NONE"
     Fcfg="/home/stor2rrd/stor2rrd/data"
     if [[ -d $Fcfg ]]
     then
+	#echo -n " +Stor2RRD"
         echo "=============================================" >> $Fout2
+	
+	st_name=""
+	st_ip=""
+	st_os=""
+	st_wwn=""
+	st_size=""
+	st_use=""
+	st_free=""
 	
 	Fdir="$Fcfg/$Fname"
     	if [[ -d $Fdir ]]
@@ -401,20 +172,19 @@ do
         if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
         if [[ "$st_ip" == "" ]]; then st_ip="$Fip"; fi
 
-	part0="$Froom,$st_name"
+	part0="$curdate,$Froom,$st_name"
 
         echo "" >> $Fout2
-	echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout2
+	echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout2
         echo "---------------------------------------------" >> $Fout2
         echo "" >> $Fout2
     fi
 
 
-	#Xyratex
-	# log file processing
-        if [[ "$Fkey" == "Xyr" ]]
-	then
-#continue;
+#Xyratex
+    # log file processing
+    if [[ "$Fkey" == "Xyr" ]]
+    then
             Fcmd=""
             if [[ "$Fpasswd" == "LOG" ]]
             then 
@@ -424,21 +194,46 @@ do
 	    fi
 	    
 	    # general storage info
-	    st_name=""; st_name=$( trim "$st_name" )
+	    st_name=""
+	    #; st_name=$( trim "$st_name" )
 	    st_os=`$Fcmd | grep "Firmware Version:" | cut -d: -f2`; st_os=$( trim "$st_os" )
-	    st_size=""
-	    st_use=""
-	    st_free=""
 	    st_ip=""
-	    st_wwns=""
+	    st_wwn=""
 
 	    if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
 	    if [[ "$st_ip" == "" ]]; then st_ip="($Fip)"; fi
 
-	    part0="$Froom,$st_name"
-	    echo -n "Processing $part0..."
+	    part0="$curdate,$Froom,$st_name"
 
-	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    #---
+	    # Calc total capacity, used, free by summ DiskGroups data 
+	    # -- code from DiskGroup section --
+	    st_size=0
+	    st_use=0
+	    st_free=0
+	    # info about disk groups
+	    dgrp_count=`$Fcmd | grep "Total Arrays:" | cut -d\  -f3 | cut -d, -f1`; dgrp_count=$( trim "$dgrp_count" )
+	    for ((index=0; index<$dgrp_count; index++))
+	    do
+		dgrp_id="0000$index"; dgrp_id=${dgrp_id:(-2)}
+		dgrp_size=`$Fcmd | grep -A 100 "Total Arrays:" | grep -B 100 "Total Logical Drives:" | tail -n +4 | grep "Array:$dgrp_id" | cut -d, -f5`; dgrp_size=$( trim "$dgrp_size" )
+		dgrp_size=$( str2KB "$dgrp_size" )
+		dgrp_free=0
+		st_size=$(($st_size+$dgrp_size))
+		st_free=$(($st_free+$dgrp_free))
+		dgrp_use=$(($dgrp_size-$dgrp_free))
+		st_use=$(($st_use+$dgrp_use))
+	    done
+    	    st_sizeKB="$st_size"
+    	    st_useKB="$st_use"
+    	    st_freeKB="$st_free"
+    	    st_size=$( KB2str "$st_size" ) #; st_size=${st_size/" "/""}
+    	    st_use=$( KB2str "$st_use" )   #; st_use=${st_use/" "/""}
+    	    st_free=$( KB2str "$st_free" ) #; st_free=${st_free/" "/""}
+	    #---
+
+	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_sizeKB,$st_useKB,$st_freeKB,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
             
 	    
 	    # info by each controller
@@ -461,6 +256,7 @@ do
     	    	    index=$(($index+1))
 
 		    echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $Fout 
+		    echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
         	done
             done
 
@@ -502,6 +298,7 @@ do
 		encl_speed=""; encl_speed=$( trim "$encl_speed" )
 
 		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $FoutDB
 	    done		
 	    
 #Drive List:
@@ -529,13 +326,17 @@ do
     	    	disk_type=`echo "$str" | cut -d\; -f1`; disk_type=$( trim "$disk_type" )
     	    	disk_mode=""; disk_mode=$( trim "$disk_mode" )
     	    	disk_size=`echo "$str" | cut -d\; -f5`; disk_size=$( trim "$disk_size" )
-		disk_size="$disk_size GB"
+		#disk_size="$disk_size GB"
+		disk_size=$( str2KB "$disk_size GB" )
+		disk_sizeKB="$disk_size"
+		disk_size=$( KB2str "$disk_size" )
 		disk_sn=`echo "$str" | cut -d\; -f4`; disk_sn=$( trim "$disk_sn" )
 		disk_speed=""; disk_speed=$( trim "$disk_speed" )
     	    	disk_pn=""; disk_pn=$( trim "$disk_pn" )
 
 		unset str    
 		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB
 	    done < $Ftmp
 	    
 	    
@@ -547,9 +348,14 @@ do
 		dgrp_name=`$Fcmd | grep -A 100 "Total Arrays:" | grep -A 4 "Array:$dgrp_id" | grep "Array Name:" | cut -d: -f2`; dgrp_name=$( trim "$dgrp_name" )
 		dgrp_status=""; dgrp_status=$( trim "$dgrp_status" )
 		dgrp_size=`$Fcmd | grep -A 100 "Total Arrays:" | grep -B 100 "Total Logical Drives:" | tail -n +4 | grep "Array:$dgrp_id" | cut -d, -f5`; dgrp_size=$( trim "$dgrp_size" )
-		dgrp_free=""; dgrp_free=$( trim "$dgrp_free" )
+		dgrp_size=$( str2KB "$dgrp_size" )
+		dgrp_free="0 B" #; dgrp_free=$( trim "$dgrp_free" )
+		dgrp_sizeKB="$dgrp_size"
+		dgrp_freeKB="0"
+		dgrp_size=$( KB2str "$dgrp_size" )
 
 		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_size,$dgrp_free,$part6,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_sizeKB,$dgrp_freeKB,$part6,$part7" >> $FoutDB
 	    done
 	    
 	    
@@ -566,6 +372,9 @@ do
 		
 		vol_name=`$Fcmd | grep -A 100 "Total Logical Drives:" | grep -A 2 "LD:$vol_id" | grep "LD Name:" | cut -d: -f2`; vol_name=$( trim "$vol_name" )
 		vol_size=`$Fcmd | grep -A 100 "Total Logical Drives:" | grep "LD:$vol_id" | cut -d: -f3 | sed 's/ Regions//g'`; vol_size=$( trim "$vol_size" )
+		vol_size=$( str2KB "$vol_size" )
+		vol_sizeKB="$vol_size"
+		vol_size=$( KB2str "$vol_size" )
 		
 		vol_array=`$Fcmd | grep -A 100 "Total Logical Drives:" | grep -A 2 "LD:$vol_id" | grep "Array:" | cut -d: -f4 | sed 's/ LBA//g'`; vol_array=$( trim "$vol_array" )
 		vol_diskgrp=`$Fcmd | grep -A 100 "Total Arrays:" | grep -A 4 "Array:$vol_array" | grep "Array Name:" | cut -d: -f2`; vol_diskgrp=$( trim "$vol_diskgrp" )
@@ -575,6 +384,7 @@ do
 		vol_srvs=""
 		
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    done
 	    
 	    
@@ -609,18 +419,16 @@ do
 		
 		unset str    
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $FoutDB
     	    done < $Ftmp
 	    
-	    if [[ -f $Ftmp ]]; then rm $Ftmp; fi
-
-	    echo " end"
-	fi
+	if [[ -f $Ftmp ]]; then rm $Ftmp; fi
+    fi
 
 
-	#HP MSA P2000, Lenovo DS2200
-        if [[ "$Fkey" == "MSA" ]] || [[ "$Fkey" == "LvoDS" ]]
-	then
-#continue
+#HP MSA P2000, Lenovo DS2200
+    if [[ "$Fkey" == "MSA" ]] || [[ "$Fkey" == "LvoDS" ]]
+    then
 	    #FcmdSNMP="snmpwalk -v 1 -c public $Fip"
             #hpMSA		1.3.6.1.4.1.11.2.51
             #Experemental 	1.3.6.1.3.94
@@ -644,10 +452,6 @@ do
 	    
 	    st_name=`grep "System Name:" $Ftmp | head -n 1 | cut -d: -f2`; st_name=$( trim "$st_name" )
 	    st_os=`grep "Version:" $Ftmp | cut -d: -f2`; st_os=$( trim "$st_os" )
-	    st_size=""
-	    st_use=""
-	    st_free=""
-	    st_wwns=""
 	    
 	    echo "set cli-parameters pager off#show controllers#exit#" | tr '#' '\n' > "$Ftmp.cmd"
 	    eval "$Fcmd < $Ftmp.cmd > $Ftmp"; wait
@@ -657,6 +461,7 @@ do
     	    #if [[ "$st_ip" != "" ]]; then st_ip="($Fip) ${st_ip}"; fi
     	    if [[ "$st_ip" != "" ]]; then st_ip=${st_ip/"$Fip"/"($Fip)"}; fi
 	    
+	    st_wwn=""
 	    #echo "set cli-parameters pager off#show ports#exit#" | tr '#' '\n' > "$Ftmp.cmd"
 	    #eval "$Fcmd < $Ftmp.cmd > $Ftmp"; wait
 	    #st_wwns=`grep "FC(" $Ftmp | tr ' ' '\t' | tr -s '\t' | cut -f3  | sed 's/../&:/g;s/:$//' | tr '\n' ';'`; st_wwns=$( trim "$st_wwns" )
@@ -668,11 +473,62 @@ do
 	    if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
 	    if [[ "$st_ip" == "" ]]; then st_ip="($Fip)"; fi
 
-	    part0="$Froom,$st_name"
-	    echo -n "Processing $part0..."
+	    part0="$curdate,$Froom,$st_name"
 
-	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
-            
+	    #---
+	    # Calc total capacity, used, free by summ DiskGroups data 
+	    # -- code from DiskGroup section --
+	    # info about disk groups
+    	    if [[ "$Fkey" == "MSA" ]]
+    	    then
+		echo "set cli-parameters pager off#show vdisks#exit#" | tr '#' '\n' > "$Ftmp.cmd"
+		eval "$Fcmd < $Ftmp.cmd > $Ftmp"; wait
+		#echo "============= MSA DISKS GROUPS =============" >> $Flog
+		#cat $Ftmp >> $Flog
+		eval "grep -A 1000 \"show vdisks\" $Ftmp | grep -B 1000 \"\-\-\-\-\-\-\-\-\-\-\" | tail -n +2 | head -n -1 > $Ftmp2"
+	    else
+		echo "set cli-parameters pager off#show disk-groups#exit#" | tr '#' '\n' > "$Ftmp.cmd"
+		eval "$Fcmd < $Ftmp.cmd > $Ftmp"; wait
+		#echo "============= LvDS DISKS GROUPS =============" >> $Flog
+		#cat $Ftmp >> $Flog
+		eval "grep -A 1000 \"show disk-groups\" $Ftmp | grep -B 1000 \"\-\-\-\-\-\-\-\-\-\-\" | tail -n +2 | head -n -1 > $Ftmp2"
+	    fi
+	    
+	    #P2000  "Name;Size;Free;Own;Pref;RAID;Disks;Spr;Chk;Status;Jobs;Job%;Serial_Number;Drive_Spin_Down;Spin_Down_Delay;Health;Health_Reason;Health_Recommendation"
+	    #DS2200 "Name;Size;Free;Pool;Tier;%_of_Pool;Own;RAID;Disks;Status;Current_Job;Job%;Sec_Fmt;Health;Reason_Action"
+	    tableconv $Ftmp2 "Size;Free"
+	    
+	    index=0
+            while read line; do
+    		diskgrp[$index]="$line"
+	        index=$(($index+1))
+    	    done < $Ftmp2
+    	                
+    	    st_size=0
+    	    st_use=0
+    	    st_free=0
+    	    for ((b=0; b < ${#diskgrp[*]}; b++))
+            do
+        	str="${diskgrp[$b]}"
+		dgrp_size=`echo "$str" | cut -d\; -f1`; dgrp_size=$( trim "$dgrp_size" )
+		dgrp_free=`echo "$str" | cut -d\; -f2`; dgrp_free=$( trim "$dgrp_free" )
+		dgrp_size=$( str2KB "$dgrp_size" )
+		dgrp_free=$( str2KB "$dgrp_free" )
+		st_size=$(($st_size+$dgrp_size))
+		st_free=$(($st_free+$dgrp_free))
+		dgrp_use=$(($dgrp_size-$dgrp_free))
+		st_use=$(($st_use+$dgrp_use))
+	    done
+    	    st_sizeKB="$st_size"
+    	    st_useKB="$st_use"
+    	    st_freeKB="$st_free"
+    	    st_size=$( KB2str "$st_size" ) #; st_size=${st_size/" "/""}
+    	    st_use=$( KB2str "$st_use" )   #; st_use=${st_use/" "/""}
+    	    st_free=$( KB2str "$st_free" ) #; st_free=${st_free/" "/""}
+	    #---
+
+	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_sizeKB,$st_useKB,$st_freeKB,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
 	    
 	    # info by each controller
 	    echo "set cli-parameters pager off#show ports#exit#" | tr '#' '\n' > "$Ftmp.cmd"
@@ -698,9 +554,9 @@ do
     	    	ctrl_status=`echo "$str" | cut -d\; -f3`; ctrl_status=$( trim "$ctrl_status" )
 
 		echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
             done
             unset controller
-#continue;
 	    
 	    # info by each enclosure
 	    echo "set cli-parameters pager off#show enclosures#exit#" | tr '#' '\n' > "$Ftmp.cmd"
@@ -730,6 +586,7 @@ do
 		encl_speed=`echo "$str" | cut -d\; -f4`; encl_speed=$( trim "$encl_speed" )
 
 		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $FoutDB
         	unset encl
             done
             unset enclosure
@@ -767,10 +624,13 @@ do
 		disk_bay=`echo "$disk_pos" | cut -d. -f2`; disk_bay=$( trim "$disk_bay" )
 		disk_sn=`echo "$str" | cut -d\; -f2`; disk_sn=$( trim "$disk_sn" )
     	    	disk_pn=`echo "$str" | cut -d\; -f3`; disk_pn=$( trim "$disk_pn" )
-    	    	disk_size=`echo "$str" | cut -d\; -f7`; disk_size=$( trim "$disk_size" )
     	    	disk_status=`echo "$str" | cut -d\; -f8`; disk_status=$( trim "$disk_status" )
     	    	disk_mode=`echo "$str" | cut -d\; -f5`; disk_mode=$( trim "$disk_mode" )
     	    	disk_type=`echo "$str" | cut -d\; -f4`; disk_type=$( trim "$disk_type" )
+    	    	disk_size=`echo "$str" | cut -d\; -f7`; disk_size=$( trim "$disk_size" )
+		disk_size=$( str2KB "$disk_size" )
+		disk_sizeKB="$disk_size"
+		disk_size=$( KB2str "$disk_size" )
 
 		disk_speed=`echo "$str" | cut -d\; -f6`; disk_speed=$( trim "$disk_speed" )
     		if [[ "$Fkey" == "MSA" ]]
@@ -781,6 +641,7 @@ do
 		fi
 		
 		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB 
         	unset disk
             done
             unset harddisk
@@ -818,9 +679,16 @@ do
 		dgrp_name=`echo "$str" | cut -d\; -f1`; dgrp_name=$( trim "$dgrp_name" )
 		dgrp_status=`echo "$str" | cut -d\; -f4`; dgrp_status=$( trim "$dgrp_status" )
 		dgrp_size=`echo "$str" | cut -d\; -f2`; dgrp_size=$( trim "$dgrp_size" )
+		dgrp_size=$( str2KB "$dgrp_size" )
 		dgrp_free=`echo "$str" | cut -d\; -f3`; dgrp_free=$( trim "$dgrp_free" )
+		dgrp_free=$( str2KB "$dgrp_free" )
+		dgrp_sizeKB="$dgrp_size"
+		dgrp_freeKB="$dgrp_free"
+		dgrp_size=$( KB2str "$dgrp_size" )
+		dgrp_free=$( KB2str "$dgrp_free" )
 
 		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_size,$dgrp_free,$part6,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_sizeKB,$dgrp_freeKB,$part6,$part7" >> $FoutDB
             done
             unset diskgrp
 	    
@@ -853,9 +721,12 @@ do
 	    do
 		str=${REPLY}
 		vol_name=`echo "$str" | cut -d\; -f2`; vol_name=$( trim "$vol_name" )
-		vol_size=`echo "$str" | cut -d\; -f3`; vol_size=$( trim "$vol_size" )
 		vol_diskgrp=`echo "$str" | cut -d\; -f1`; vol_diskgrp=$( trim "$vol_diskgrp" )
         	vol_status=`echo "$str" | cut -d\; -f4`; vol_status=$( trim "$vol_status" )
+		vol_size=`echo "$str" | cut -d\; -f3`; vol_size=$( trim "$vol_size" )
+		vol_size=$( str2KB "$vol_size" )
+		vol_sizeKB="$vol_size"
+		vol_size=$( KB2str "$vol_size" )
     		
     		if [[ "$Fkey" == "MSA" ]]
     		then 
@@ -888,6 +759,7 @@ do
 		
 		unset str
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    done < $Ftmp2
 	    
 	    
@@ -932,21 +804,19 @@ do
 		
 		unset str    
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $FoutDB
 	    done < $Ftmp2
 
-	    if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
-	    if [[ -f "$Ftmp.cmd" ]]; then rm "$Ftmp.cmd"; fi
-	    if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
-	    if [[ -f "$Ftmp.volwwn" ]]; then rm "$Ftmp.volwwn"; fi
-
-	    echo " end"
-	fi
+	if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
+	if [[ -f "$Ftmp.cmd" ]]; then rm "$Ftmp.cmd"; fi
+	if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
+	if [[ -f "$Ftmp.volwwn" ]]; then rm "$Ftmp.volwwn"; fi
+    fi
 
     
-	#NetApp 7-mode
-        if [[ "$Fkey" == "NAp" ]]
-	then
-#continue
+#NetApp 7-mode
+    if [[ "$Fkey" == "NAp" ]]
+    then
 	    FcmdSNMP="snmpwalk -v 1 -c public $Fip"
             Fcmd=""
             if [[ "$Fpasswd" == "SSH" ]]
@@ -961,10 +831,6 @@ do
     
 	    st_name=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.7.1.3.0" | cut -d\" -f2 )
 	    st_os=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.1.2.0" | cut -d\" -f2 | cut -d: -f1 )
-	    st_size=""
-	    st_use=""
-	    st_free=""
-    	    st_wwns=""
 
 	    st_ip=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.16.4.1.3" | cut -d\: -f4 | sed 's/^[ \t]*//' | tr '\n' ';' ); st_ip=$( trim "$st_ip" )
 	    if [[ ${st_ip:(-1)} == ";" ]]; then st_ip=${st_ip:0:(${#st_ip}-1)}; fi 
@@ -972,6 +838,7 @@ do
     	    #if [[ "$st_ip" != "" ]]; then st_ip="($Fip) ${st_ip}"; fi
     	    if [[ "$st_ip" != "" ]]; then st_ip=${st_ip/"$Fip"/"($Fip)"}; fi
 	    
+    	    st_wwn=""
 	    #st_wwns=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.17.17.1.1.4" | cut -d\" -f2 | tr '\n' ';' ); st_wwns=$( trim "$st_wwns" )
 	    #if [[ ${st_wwns:(-1)} == ";" ]]; then st_wwns=${st_wwns:0:(${#st_wwns}-1)}; fi 
     	    #st_wwns=${st_wwns//";"/"; "}
@@ -979,10 +846,54 @@ do
 	    if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
 	    if [[ "$st_ip" == "" ]]; then st_ip="($Fip)"; fi
 
-	    part0="$Froom,$st_name"
-	    echo -n "Processing $part0..."
+	    part0="$curdate,$Froom,$st_name"
 
-	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    #---
+	    # Calc total capacity, used, free by summ DiskGroups data 
+	    # -- code from DiskGroup section --
+	    # info about disk groups
+    	    st_size=0
+    	    st_use=0
+    	    st_free=0
+	    diskgrp=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.12" | cut -d: -f4 ); diskgrp=$( trim "$diskgrp" )
+    	    for ((b=0; b < $diskgrp; b++))
+            do
+    	        dgrp_id=$(($b+1))
+		
+		dgrp_name=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.11.1.2.$dgrp_id" | cut -d\" -f2 )
+		
+		dflist=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.1" | wc -l )
+        	for ((c=0; c < $dflist; c++))
+	        do
+    	    	    df_id=$(($c+1))
+		    df_name=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.2.$df_id" | cut -d\" -f2 )
+		    if [[ "$dgrp_name" != "$df_name"  ]]; then continue; fi
+		    
+		    valH=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.14.$df_id" | cut -d: -f4 ); valH=$( trim "$valH" )
+		    valL=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.15.$df_id" | cut -d: -f4 ); valL=$( trim "$valL" )
+		    dgrp_size=$( value64bit $valH $valL )
+		
+		    valH=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.18.$df_id" | cut -d: -f4 ); valH=$( trim "$valH" )
+		    valL=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.19.$df_id" | cut -d: -f4 ); valL=$( trim "$valL" )
+		    dgrp_free=$( value64bit $valH $valL )
+		    
+		    st_size=$(($st_size+$dgrp_size))
+		    st_free=$(($st_free+$dgrp_free))
+		    dgrp_use=$(($dgrp_size-$dgrp_free))
+		    st_use=$(($st_use+$dgrp_use))
+		    break
+		done
+	    done
+    	    st_sizeKB="$st_size"
+    	    st_useKB="$st_use"
+    	    st_freeKB="$st_free"
+    	    st_size=$( KB2str "$st_size" ) #; st_size=${st_size/" "/""}
+    	    st_use=$( KB2str "$st_use" )   #; st_use=${st_use/" "/""}
+    	    st_free=$( KB2str "$st_free" ) #; st_free=${st_free/" "/""}
+	    #---
+	    
+	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_sizeKB,$st_useKB,$st_freeKB,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
             
 	    
 	    # info by each controller
@@ -1007,9 +918,10 @@ do
 		if [[ "$ctrl_status" == "10" ]]; then ctrl_status="offlinedByUserSystem"; fi
                                                                                     			    		        		        		        		        		        		        		                                                      
 		echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
             done
-#continue;
 
+	    
 	    # info by each enclosure
 	    enclosure=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.21.1.1.0" | cut -d: -f4 ); enclosure=$( trim "$enclosure" )
     	    for ((b=0; b < $enclosure; b++))
@@ -1029,8 +941,9 @@ do
 		encl_speed=""
 		
 		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $FoutDB
 	    done
-	
+	    
 	    
 	    # info by hard disks
 	    # Summary hard disk count 
@@ -1062,13 +975,17 @@ do
     	    	    disk_type=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.2.1.31.$c.1.$disk_id" | cut -d\" -f2 ); disk_type=$( trim "$disk_type" )
     	        
     	    	    disk_size=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.2.1.9.$c.1.$disk_id" | cut -d: -f4 ); disk_size=$( trim "$disk_size" )
-    	    	    disk_size=$( printf "%.1fGB" $(($disk_size/1024)) )
+    	    	    #disk_size=$( printf "%.1fGB" $(($disk_size/1024)) )
+		    disk_size=$( str2KB "$disk_size MB" )
+		    disk_sizeKB="$disk_size"
+		    disk_size=$( KB2str "$disk_size" )
 		
 		    disk_speed=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.2.1.30.$c.1.$disk_id" | cut -d\" -f2 ); disk_speed=$( trim "$disk_speed" ); disk_speed="${disk_speed}RPM"
     	    	    disk_pn=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.2.1.28.$c.1.$disk_id" | cut -d\" -f2 ); disk_pn=$( trim "$disk_pn" )
     	    	    disk_sn=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.2.1.26.$c.1.$disk_id" | cut -d\" -f2 ); disk_sn=$( trim "$disk_sn" )
 		
 		    echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		    echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB
         	done
 	    done	    
 	    # Spare disks
@@ -1090,13 +1007,17 @@ do
     	        disk_type=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.3.1.21.$disk_id" | cut -d\" -f2 ); disk_type=$( trim "$disk_type" )
     	        
     	        disk_size=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.3.1.7.$disk_id" | cut -d: -f4 ); disk_size=$( trim "$disk_size" )
-    	        disk_size=$( printf "%.1fGB" $(($disk_size/1024)) )
+    	        #disk_size=$( printf "%.1fGB" $(($disk_size/1024)) )
+		disk_size=$( str2KB "$disk_size MB" )
+		disk_sizeKB="$disk_size"
+		disk_size=$( KB2str "$disk_size" )
 		
 		disk_speed=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.3.1.20.$disk_id" | cut -d\" -f2 ); disk_speed=$( trim "$disk_speed" ); disk_speed="${disk_speed}RPM"
     	        disk_pn=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.3.1.18.$disk_id" | cut -d\" -f2 ); disk_pn=$( trim "$disk_pn" )
     	        disk_sn=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.6.3.1.16.$disk_id" | cut -d\" -f2 ); disk_sn=$( trim "$disk_sn" )
 		
 		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB
             done
 	    
 	    
@@ -1109,8 +1030,10 @@ do
 		dgrp_name=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.11.1.2.$dgrp_id" | cut -d\" -f2 )
 		dgrp_status=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.11.1.5.$dgrp_id" | cut -d\" -f2 )
 		
-		dgrp_size="0KB"
-		dgrp_free="0KB"
+		dgrp_size="0 B"
+		dgrp_free="0 B"
+		dgrp_sizeKB="0"
+		dgrp_freeKB="0"
 		dflist=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.1" | wc -l )
         	for ((c=0; c < $dflist; c++))
 	        do
@@ -1120,16 +1043,21 @@ do
 		    
 		    valH=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.14.$df_id" | cut -d: -f4 ); valH=$( trim "$valH" )
 		    valL=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.15.$df_id" | cut -d: -f4 ); valL=$( trim "$valL" )
-		    dgrp_size=$( value64bit $valH $valL ); dgrp_size=$( kb2gb $dgrp_size 2 ); dgrp_size="${dgrp_size}GB"
+		    dgrp_size=$( value64bit $valH $valL )
 		
 		    valH=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.18.$df_id" | cut -d: -f4 ); valH=$( trim "$valH" )
 		    valL=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.19.$df_id" | cut -d: -f4 ); valL=$( trim "$valL" )
-		    dgrp_free=$( value64bit $valH $valL ); dgrp_free=$( kb2gb $dgrp_free 2 ); dgrp_free="${dgrp_free}GB"
+		    dgrp_free=$( value64bit $valH $valL )
 		    
+		    dgrp_sizeKB="$dgrp_size"
+		    dgrp_freeKB="$dgrp_free"
+		    dgrp_size=$( KB2str "$dgrp_size" ) #; dgrp_size=${dgrp_size/" "/""}
+		    dgrp_free=$( KB2str "$dgrp_free" ) #; dgrp_free=${dgrp_free/" "/""}
 		    break
 		done
 		
 		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_size,$dgrp_free,$part6,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_sizeKB,$dgrp_freeKB,$part6,$part7" >> $FoutDB
 	    done
 	    
 	    
@@ -1141,8 +1069,9 @@ do
 		vol_name=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.8.1.2.$vol_id" | cut -d\" -f2 )
 		vol_status=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.8.1.5.$vol_id" | cut -d\" -f2 )
 		
-		#vol_size=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.8.1.3.$vol_id" | cut -d\" -f2 ); vol_size=$( kb2gb $vol_size 2 ); vol_size="${vol_size}GB"
-		vol_size="0KB"
+		#vol_size=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.8.1.3.$vol_id" | cut -d\" -f2 );...
+		vol_size="0 B"
+		vol_sizeKB="0"
 		dflist=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.1" | wc -l )
         	for ((c=0; c < $dflist; c++))
 	        do
@@ -1152,7 +1081,9 @@ do
 		    
 		    valH=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.14.$df_id" | cut -d: -f4 ); valH=$( trim "$valH" )
 		    valL=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.5.4.1.15.$df_id" | cut -d: -f4 ); valL=$( trim "$valL" )
-		    vol_size=$( value64bit $valH $valL ); vol_size=$( kb2gb $vol_size 2 ); vol_size="${vol_size}GB"
+		    vol_size=$( value64bit $valH $valL )
+		    vol_sizeKB="$vol_size"
+		    vol_size=$( KB2str "$vol_size" ) #; vol_size=${vol_size/" "/""}
 		
 		    break
 		done
@@ -1164,6 +1095,7 @@ do
 		vol_srvs=""
 
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    done
 	    
 	    # info about LUNs
@@ -1195,8 +1127,10 @@ do
 		valH=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.17.15.2.1.5.$vol_id" | cut -d: -f4 ); valH=$( trim "$valH" )
 		valL=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.17.15.2.1.4.$vol_id" | cut -d: -f4 ); valL=$( trim "$valL" )
 		vol_size=$( value64bit $valH $valL ); 
-		vol_size=$( b2kb $vol_size 0 ); vol_size=${vol_size:0:(${#vol_size}-1)}
-		vol_size=$( kb2gb $vol_size 2 ); vol_size="${vol_size}GB"
+		#volume size in Bytes
+		vol_size=$( str2KB "$vol_size" )
+		vol_sizeKB="$vol_size"
+		vol_size=$( KB2str "$vol_size" ) #; vol_size=${vol_size/" "/""}
 		
 		vol_wwn=$( eval "$FcmdSNMP 1.3.6.1.4.1.789.1.17.15.2.1.7.$vol_id" | cut -d\" -f2 )
 		vol_wwn=$( echo -n "$vol_wwn" | xxd -ps -c 200 | tr -d '\n' ); 
@@ -1211,6 +1145,7 @@ do
     		vol_srvs=${vol_srvs//";"/"; "}
 
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    done
 	    unset volum
 
@@ -1238,10 +1173,12 @@ do
 		
 		vol_func="qtree"
 		vol_size=""
+		vol_sizeKB="0"
 		vol_srvs=""
 		vol_diskgrp=""
 		
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    done
 	    unset volum
 	    unset share
@@ -1282,19 +1219,17 @@ do
 		unset wh
 		
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $FoutDB
 	    done
 
-	    if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
-	    if [[ -f "$Ftmp.host" ]]; then rm "$Ftmp.host"; fi
-
-	    echo " end"
-	fi
+	if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
+	if [[ -f "$Ftmp.host" ]]; then rm "$Ftmp.host"; fi
+    fi
 
 
-	#IBM DS5K
-        if [[ "$Fkey" == "DS" ]] || [[ "$Fkey" == "DPV" ]]
-	then
-#continue            
+#IBM DS5K
+    if [[ "$Fkey" == "DS" ]] || [[ "$Fkey" == "DPV" ]]
+    then
             Fcmd="SMcli $Fip"
 	    
 	    # general storage info
@@ -1313,6 +1248,15 @@ do
 	    st_size=$( cat $Ftmp | grep "Total Capacity:" | $key | awk '{ print $3 $4 }' | sed 's/,//g' )
 	    st_use=$( cat $Ftmp | grep "Total Capacity:" | $key | awk '{ print $6 $7 }' | sed 's/,//g' )
 	    st_free=$( cat $Ftmp | grep "Total Free Capacity:" | $key | awk '{ print $4 $5}' | sed 's/,//g' )
+	    st_size=$( str2KB "$st_size" )
+	    st_use=$( str2KB "$st_use" )
+	    st_free=$( str2KB "$st_free" )
+    	    st_sizeKB="$st_size"
+    	    st_useKB="$st_use"
+    	    st_freeKB="$st_free"
+	    st_size=$( KB2str "$st_size" )
+	    st_use=$( KB2str "$st_use" )
+	    st_free=$( KB2str "$st_free" )
 	    
 	    st_ip=$( cat "$Ftmp" | grep -A 1000 "CONTROLLERS----------" | grep -B 1000 "DRIVES---------" | grep "IP address:" | grep -v "Local" | grep -v "0.0.0.0" | awk '{ print $3 }' | tr '\n' ';' | tr -s ';' ); st_ip=$( trim "$st_ip" )
 	    if [[ ${st_ip:(-1)} == ";" ]]; then st_ip=${st_ip:0:(${#st_ip}-1)}; fi 
@@ -1320,7 +1264,7 @@ do
     	    #if [[ "$st_ip" != "" ]]; then st_ip="($Fip) ${st_ip}"; fi
     	    if [[ "$st_ip" != "" ]]; then st_ip=${st_ip/"$Fip"/"($Fip)"}; fi
 
-	    st_wwns=""
+	    st_wwn=""
 	    #st_wwns=$( cat $Ftmp | grep "World-wide port identifier:" | awk '{ print $4}' | tr '\n' ';' ); st_wwns=$( trim "$st_wwns" )
 	    #if [[ ${st_wwns:(-1)} == ";" ]]; then st_wwns=${st_wwns:0:(${#st_wwns}-1)}; fi 
     	    #st_wwns=${st_wwns//";"/"; "}
@@ -1328,10 +1272,10 @@ do
 	    if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
 	    if [[ "$st_ip" == "" ]]; then st_ip="($Fip)"; fi
 
-	    part0="$Froom,$st_name"
-	    echo -n "Processing $part0..."
+	    part0="$curdate,$Froom,$st_name"
 	    
-	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_sizeKB,$st_useKB,$st_freeKB,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
             
 	    
 	    # info by each controller
@@ -1358,6 +1302,7 @@ do
     	    	    ctrl_status=$( cat $Ftmp2 | grep -B 12 "$str" | grep "Link status:" | awk '{ print $3}'); ctrl_status=$( trim "$ctrl_status" )
 
 		    echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $Fout 
+		    echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
         	done
         	unset controller
             done
@@ -1380,6 +1325,7 @@ do
 		encl_speed=""
 	
 		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $FoutDB
             done
 	    
 	    
@@ -1411,15 +1357,19 @@ do
     	    	disk_status=`echo "$str" | cut -d\; -f3`; disk_status=$( trim "$disk_status" )
     	    	disk_mode=`echo "$str" | cut -d\; -f5`; disk_mode=$( trim "$disk_mode" )
     	    	disk_type=`echo "$str" | cut -d\; -f6`; disk_type=$( trim "$disk_type" )
-    	    	disk_size=`echo "$str" | cut -d\; -f4`; disk_size=$( trim "$disk_size" )
 		disk_speed=`echo "$str" | cut -d\; -f7`; disk_speed=$( trim "$disk_speed" )
     	    	disk_pn=`echo "$str" | cut -d\; -f8`; disk_pn=$( trim "$disk_pn" )
+    	    	disk_size=`echo "$str" | cut -d\; -f4`; disk_size=$( trim "$disk_size" )
+		disk_size=$( str2KB "$disk_size" )
+		disk_sizeKB="$disk_size"
+		disk_size=$( KB2str "$disk_size" )
     		
 		#SMcli 10.100.11.69 -c "show physicalDisk [0,1];"
 		eval "$Fcmd -c \"show physicalDisk [${disk_encl},${disk_bay}];\" > $Ftmp"
 		disk_sn=`cat $Ftmp | grep "Serial number:" |  cut -d: -f2`; disk_sn=$( trim "$disk_sn" )
 		
 		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB
         	unset disk
             done
             unset harddisk
@@ -1431,10 +1381,9 @@ do
 	    diskgrp=$( cat "$Ftmp.array" | grep "Total Disk Groups:" | awk '{ print $4 }' )
 	    if [[ "$diskgrp" == "0" ]]
 	    then
-		cat "$Ftmp.array" | grep "DISK POOLS------" -A 1000 | grep "DISK GROUPS------" -B 1000 | grep "DETAILS" -B 100 | head -n -2 | grep "Status:" -A 100 | tail -n +3 > $Ftmp2
-		diskgrp=$diskpool
+		cat "$Ftmp.array" | grep "DISK POOLS------" -A 1000 | grep "DISK GROUPS------" -B 1000 | head -n $((20+$diskpool)) | grep "DETAILS" -B 100 | head -n -2 | grep "Status:" -A 100 | tail -n +3 > $Ftmp2
 	    else
-		cat "$Ftmp.array" | grep "DISK GROUPS------" -A 1000 | grep "STANDARD VIRTUAL DISKS------" -B 1000 | grep "DETAILS" -B 100 | head -n -2 | grep "Status:" -A 100 | tail -n +3> $Ftmp2
+		cat "$Ftmp.array" | grep "DISK GROUPS------" -A 1000 | grep "STANDARD VIRTUAL DISKS------" -B 1000 | head -n $((20+$diskgrp)) | grep "DETAILS" -B 100 | head -n -2 | grep "Status:" -A 100 | tail -n +3 > $Ftmp2
 	    fi
 	    
 	    cat $Ftmp2 | head -n 1 > $Ftmp
@@ -1445,6 +1394,7 @@ do
 	    # DISK GROUPS "Name;Status;Usable_Capacity;Used_Capacity;Free_Capacity;RAID_Level;Physical_Disk/Media_Type;Virtual_Disks;Secure_Capable;DA_Capable"
 	    tableconv $Ftmp "Name;Status;Usable_Capacity;Free_Capacity"
 	    
+            unset diskgrp
 	    index=0
             while read line; do
     		diskgrp[$index]="$line"
@@ -1457,9 +1407,16 @@ do
 		dgrp_name=`echo "$str" | cut -d\; -f1`; dgrp_name=$( trim "$dgrp_name" )
 		dgrp_status=`echo "$str" | cut -d\; -f2`; dgrp_status=$( trim "$dgrp_status" )
 		dgrp_size=`echo "$str" | cut -d\; -f3 | sed 's/,//g'`; dgrp_size=$( trim "$dgrp_size" )
+		dgrp_size=$( str2KB "$dgrp_size" )
 		dgrp_free=`echo "$str" | cut -d\; -f4 | sed 's/,//g'`; dgrp_free=$( trim "$dgrp_free" ) 
+		dgrp_free=$( str2KB "$dgrp_free" )
+		dgrp_sizeKB="$dgrp_size"
+		dgrp_freeKB="$dgrp_free"
+		dgrp_size=$( KB2str "$dgrp_size" )
+		dgrp_free=$( KB2str "$dgrp_free" )
 	
 		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_size,$dgrp_free,$part6,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_sizeKB,$dgrp_freeKB,$part6,$part7" >> $FoutDB
             done
             unset diskgrp
 	    
@@ -1477,9 +1434,12 @@ do
     	        vol_down="head -n 1"
     	        vol_name=$( cat $Ftmp | grep "Virtual Disk name:" | $vol_up | $vol_down | awk '{ print $4 }' )
     	        vol_status=$( cat $Ftmp | grep "Virtual Disk status:" | $vol_up | $vol_down | awk '{ print $4 }' )
-		vol_size=$( cat $Ftmp | grep "Capacity:" | $vol_up | $vol_down | awk '{ print $2 $3 }' | sed 's/,//g' )
 		vol_wwn=$( cat $Ftmp | grep "Virtual Disk world-wide identifier:" | $vol_up | $vol_down | awk '{ print $5 }' | sed 's/://g' )
 		vol_func=""
+		vol_size=$( cat $Ftmp | grep "Capacity:" | $vol_up | $vol_down | awk '{ print $2 $3 }' | sed 's/,//g' )
+		vol_size=$( str2KB "$vol_size" )
+		vol_sizeKB="$vol_size"
+		vol_size=$( KB2str "$vol_size" )
 		
 		key="Associated disk group:"; if [[ $poolNgrp == 1 ]]; then key="Associated disk pool:"; fi
 		vol_diskgrp=$( cat $Ftmp | grep "$key" | $vol_up | $vol_down | awk '{ print $4 }' )
@@ -1505,6 +1465,7 @@ do
 		if [[ ${#vol_srvs} -gt 5 && ${vol_srvs:0:4} == "Host" ]]; then vol_srvs=${vol_srvs:5:${#vol_srvs}}; echo "$vol_name#$vol_srvs#" >> "$Ftmp.volume"; fi 
 	    
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    done
 	    
 	    
@@ -1543,19 +1504,17 @@ do
 		unset wh
 		
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $FoutDB
 	    done
 	    
-	    if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
-	    rm "$Ftmp.array"
-
-	    echo " end"
-	fi
+	if [[ -f "$Ftmp.volume" ]]; then rm "$Ftmp.volume"; fi
+        rm "$Ftmp.array"
+    fi
 
 
-	#IBM Storwize 
-        if [[ "$Fkey" == "SW" ]]
-	then
-#continue            
+#IBM Storwize 
+    if [[ "$Fkey" == "SW" ]]
+    then
             Fcmd=""
             if [[ "$Fpasswd" == "SSH" ]]
             then 
@@ -1571,6 +1530,15 @@ do
 	    st_size=`grep "total_mdisk_capacity" $Ftmp | cut -d: -f2`; st_size=$( trim "$st_size" )
 	    st_use=`grep "total_used_capacity" $Ftmp | cut -d: -f2`; st_use=$( trim "$st_use" )
 	    st_free=`grep "total_free_space" $Ftmp | cut -d: -f2`; st_free=$( trim "$st_free" )
+	    st_size=$( str2KB "$st_size" )
+	    st_use=$( str2KB "$st_use" )
+	    st_free=$( str2KB "$st_free" )
+    	    st_sizeKB="$st_size"
+    	    st_useKB="$st_use"
+    	    st_freeKB="$st_free"
+	    st_size=$( KB2str "$st_size" )
+	    st_use=$( KB2str "$st_use" )
+	    st_free=$( KB2str "$st_free" )
 	    
 	    eval "$Fcmd \"lssystemip -delim : -nohdr \" > $Ftmp"
 	    st_ip=`cat $Ftmp | grep ":local:" | cut -d: -f5  | tr '\n' ';' | tr -s ';'`; st_ip=$( trim "$st_ip" )
@@ -1579,7 +1547,7 @@ do
     	    #if [[ "$st_ip" != "" ]]; then st_ip="($Fip) ${st_ip}"; fi
     	    if [[ "$st_ip" != "" ]]; then st_ip=${st_ip/"$Fip"/"($Fip)"}; fi
 	    
-    	    st_wwns=""
+    	    st_wwn=""
 	    #eval "$Fcmd \"lsportfc -delim : -nohdr \" > $Ftmp"
 	    #st_wwns=`cat $Ftmp | cut -d: -f8  | tr '[:upper:]' '[:lower:]' | sed 's/../&:/g;s/:$//' | tr '\n' ';'`; st_wwns=$( trim "$st_wwns" )
 	    #if [[ ${st_wwns:(-1)} == ";" ]]; then st_wwns=${st_wwns:0:(${#st_wwns}-1)}; fi 
@@ -1588,10 +1556,10 @@ do
 	    if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
 	    if [[ "$st_ip" == "" ]]; then st_ip="($Fip)"; fi
 
-	    part0="$Froom,$st_name"
-	    echo -n "Processing $part0..."
+	    part0="$curdate,$Froom,$st_name"
 	    
-	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_sizeKB,$st_useKB,$st_freeKB,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
 
 
 	    # info by each controller
@@ -1616,6 +1584,7 @@ do
     	        ctrl_status=`echo "$str" | cut -d: -f10`; ctrl_status=$( trim "$ctrl_status" )
 
 		echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
         	unset ctrl
             done
             unset controller
@@ -1645,6 +1614,7 @@ do
 		encl_speed=`grep "interface_speed" $Ftmp | cut -d: -f2`; encl_speed=$( trim "$encl_speed" )
 		
 		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $FoutDB
         	unset encl
             done
             unset enclosure
@@ -1670,6 +1640,9 @@ do
     	        disk_mode=`echo "$str" | cut -d: -f4`; disk_mode=$( trim "$disk_mode" )
     	        disk_type=`echo "$str" | cut -d: -f5`; disk_type=$( trim "$disk_type" )
     	        disk_size=`echo "$str" | cut -d: -f6`; disk_size=$( trim "$disk_size" )
+		disk_size=$( str2KB "$disk_size" )
+		disk_sizeKB="$disk_size"
+		disk_size=$( KB2str "$disk_size" )
 
 	        eval "$Fcmd \"lsdrive $disk_id\" > $Ftmp"
 		disk_speed=`grep "interface_speed" $Ftmp | tr ' ' '\t' | cut -f2`; disk_speed=$( trim "$disk_speed" )
@@ -1677,6 +1650,7 @@ do
     	        disk_sn=`grep "FRU_identity" $Ftmp | tr ' ' '\t' | cut -f2`; disk_sn=$( trim "$disk_sn" )
 		
 		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB
         	unset disk
             done
             unset harddisk
@@ -1699,9 +1673,16 @@ do
     	        dgrp_name=`echo "$str" | cut -d: -f2`; dgrp_name=$( trim "$dgrp_name" )
     	        dgrp_status=`echo "$str" | cut -d: -f3`; dgrp_status=$( trim "$dgrp_status" )
     	        dgrp_size=`echo "$str" | cut -d: -f6`; dgrp_size=$( trim "$dgrp_size" )
+		dgrp_size=$( str2KB "$dgrp_size" )
     	        dgrp_free=`echo "$str" | cut -d: -f8`; dgrp_free=$( trim "$dgrp_free" )
+		dgrp_free=$( str2KB "$dgrp_free" )
+		dgrp_sizeKB="$dgrp_size"
+		dgrp_freeKB="$dgrp_free"
+		dgrp_size=$( KB2str "$dgrp_size" )
+		dgrp_free=$( KB2str "$dgrp_free" )
 
 		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_size,$dgrp_free,$part6,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_sizeKB,$dgrp_freeKB,$part6,$part7" >> $FoutDB
             done
             unset diskgrp
 
@@ -1722,11 +1703,14 @@ do
     	        vol_id=`echo "$str" | cut -d: -f1`; vol_id=$( trim "$vol_id" )
     	        vol_name=`echo "$str" | cut -d: -f2`; vol_name=$( trim "$vol_name" )
     	        vol_status=`echo "$str" | cut -d: -f5`; vol_status=$( trim "$vol_status" )
-		vol_size=`echo "$str" | cut -d: -f8`; vol_size=$( trim "$vol_size" )
 		vol_wwn=`echo "$str" | cut -d: -f14`; vol_wwn=$( trim "$vol_wwn" )
 		vol_wwn=$(echo $vol_wwn | tr '[:upper:]' '[:lower:]')
 		vol_func=`echo "$str" | cut -d: -f27`; vol_func=$( trim "$vol_func" )
 		vol_diskgrp=`echo "$str" | cut -d: -f22`; vol_diskgrp=$( trim "$vol_diskgrp" )
+		vol_size=`echo "$str" | cut -d: -f8`; vol_size=$( trim "$vol_size" )
+		vol_size=$( str2KB "$vol_size" )
+		vol_sizeKB="$vol_size"
+		vol_size=$( KB2str "$vol_size" )
 	        
 	        #id:name:SCSI_id:host_id:host_name:vdisk_UID:IO_group_id:IO_group_name:mapping_type:host_cluster_id:host_cluster_name
 	        eval "$Fcmd \"lsvdiskhostmap -delim : -nohdr $vol_id\" > $Ftmp"
@@ -1747,6 +1731,7 @@ do
     		unset volumehost
 
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
         	unset vol
             done
             unset volume
@@ -1800,21 +1785,23 @@ do
 		unset wh
 		
 		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $Fout 
+		echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $FoutDB
         	unset srv
             done
             unset server
-	    
-	    echo " end"
-	fi
+    fi
 
 	
-	#Not processing
-        if [[ "$Fkey" == "Pass" ]]; then continue; fi
+#Not processing
+    if [[ "$Fkey" == "Pass" ]]
+    then 
+	echo -n " Passed" 
+    fi
 
 
-	#Template
-        if [[ "$Fkey" == "NONE" ]]
-	then
+#Template
+    if [[ "$Fkey" == "NONE" ]]
+    then
             Fcmd=""
             if [[ "$Fpasswd" == "VALUE" ]]
             then 
@@ -1826,19 +1813,28 @@ do
 	    # general storage info
 	    st_name=""; st_name=$( trim "$st_name" )
 	    st_os=""; st_os=$( trim "$st_os" )
+	    st_ip=""
+	    st_wwn=""; st_wwns=$( trim "$st_wwn" )
 	    st_size=""
 	    st_use=""
 	    st_free=""
-	    st_ip=""
-	    st_wwns=""; st_wwns=$( trim "$st_wwns" )
+	    st_size=$( str2KB "$st_size" )
+	    st_use=$( str2KB "$st_size" )
+	    st_free=$( str2KB "$st_size" )
+    	    st_sizeKB="$st_size"
+    	    st_useKB="$st_use"
+    	    st_freeKB="$st_free"
+	    st_size=$( KB2str "$st_size" )
+	    st_use=$( KB2str "$st_size" )
+	    st_free=$( KB2str "$st_size" )
 
 	    if [[ "$st_name" == "" ]]; then st_name="$Fname"; fi
 	    if [[ "$st_ip" == "" ]]; then st_ip="($Fip)"; fi
 
-	    part0="$Froom,$st_name"
-	    echo -n "Processing $part0..."
+	    part0="$curdate,$Froom,$st_name"
 
-	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwns,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_size,$st_use,$st_free,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $Fout
+	    echo "$part0,$st_ip,$st_os,$st_sizeKB,$st_useKB,$st_freeKB,$st_wwn,$part2,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
 
 	    
 	    # info by each controller
@@ -1848,6 +1844,7 @@ do
     	        #ctrl_status=""; ctrl_status=$( trim "$ctrl_status" )
 
 		#echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $Fout 
+		#echo "$part0,$part1,$ctrl_id,$ctrl_wwn,$ctrl_speed,$ctrl_status,$part3,$part4,$part5,$part6,$part7" >> $FoutDB
 	    
 	    
 	    # info by each enclosure
@@ -1860,6 +1857,7 @@ do
 		#encl_speed=""; encl_speed=$( trim "$encl_speed" )
 
 		#echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $Fout 
+		#echo "$part0,$part1,$part2,$encl_id,$encl_status,$encl_type,$encl_pn,$encl_sn,$encl_hdd,$encl_speed,$part4,$part5,$part6,$part7" >> $FoutDB
 		
 	    
 	    # info by hard disks
@@ -1869,11 +1867,13 @@ do
     	    	#disk_type=""; disk_type=$( trim "$disk_type" )
     	    	#disk_mode=""; disk_mode=$( trim "$disk_mode" )
     	    	#disk_size=""; disk_size=$( trim "$disk_size" )
+    	    	#disk_sizeKB="$disk_size"
 		#disk_speed=""; disk_speed=$( trim "$disk_speed" )
     	    	#disk_pn=""; disk_pn=$( trim "$disk_pn" )
 		#disk_sn=""; disk_sn=$( trim "$disk_sn" )
 		
 		#echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_size,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $Fout 
+		#echo "$part0,$part1,$part2,$part3,$disk_encl,$disk_bay,$disk_status,$disk_type,$disk_mode,$disk_sizeKB,$disk_speed,$disk_pn,$disk_sn,$part5,$part6,$part7" >> $FoutDB
 	    
 	    
 	    # info about disk groups
@@ -1881,8 +1881,11 @@ do
 		#dgrp_status=""; dgrp_status=$( trim "$dgrp_status" )
 		#dgrp_size=""; dgrp_size=$( trim "$dgrp_size" )
 		#dgrp_free=""; dgrp_free=$( trim "$dgrp_free" )
+		#dgrp_sizeKB="$dgrp_size"
+		#dgrp_freeKB="$dgrp_free"
 
 		#echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_size,$dgrp_free,$part6,$part7" >> $Fout
+		#echo "$part0,$part1,$part2,$part3,$part4,$dgrp_name,$dgrp_status,$dgrp_sizeKB,$dgrp_freeKB,$part6,$part7" >> $FoutDB
 	    
 	    
 	    # info about volumes
@@ -1894,6 +1897,7 @@ do
 		#vol_srvs=""
 		
 		#echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_size,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $Fout
+		#echo "$part0,$part1,$part2,$part3,$part4,$part5,$vol_name,$vol_status,$vol_sizeKB,$vol_wwn,$vol_srvs,$vol_diskgrp,$vol_func,$part7" >> $FoutDB
 	    
 	    
 	    # info about hosts
@@ -1909,24 +1913,30 @@ do
 		#unset wh
 		
 		#echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $Fout 
+		#echo "$part0,$part1,$part2,$part3,$part4,$part5,$part6,$srv_name,$srv_status,$srv_ports,$srv_wwn,$srv_vols" >> $FoutDB
 
-	    #if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
-
-	    echo " end"
-	fi
-
+	#if [[ -f $Ftmp2 ]]; then rm $Ftmp2; fi
+    fi
+    echo " end"
 done
 unset storsw
 
 if [[ -f $Fadd ]]
 then 
-    echo -n "Merge with file $Fadd ..."
+    echo -n "Merge CSV file with file \"${Fadd}\"..."
     cat $Fadd | tail -n +2 >> $Fout; 
     echo " end"
 fi
 
+if [[ -f $FaddDB ]]
+then 
+    echo -n "Merge CSV file for DataBase with file \"${FaddDB}\"..."
+    cat $FaddDB | tail -n +2 >> $FoutDB; 
+    echo " end"
+fi
+
 echo "Processing:"
-if [[ -f "$Ftmp.wwnhost" ]] && [[ -f "../sansw/sansw_rep.csv" ]]
+if [[ -f "$Ftmp.wwnhost" ]] && [[ -f "$Fsansw" ]]
 then 
     echo -n "Check SAN PortName and HostName..."
 
@@ -1949,25 +1959,31 @@ then
     	hostName=`echo "$str" | cut -f2`
     	hostStor=`echo "$str" | cut -f3`; hostStor=${hostStor//","/", "}
 	    
-	#sansw.sh - Room,Fabric+,Switch Name+,Domen+,IP,Switch WWN,Model,Firmware,Serial#,Config,Port#+,Port Name,Speed+,Status,State,Type,WWN,WWPN,Alias,Zone,SFP#+,Wave+,Vendor,Serial#,Speed
-    	title=$( cat "../sansw/sansw_rep.csv" | head -n 1 )
-    	pos=$(val2pos "$title" "," "Switch Name+")
-    	sanName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
-    	pos=$(val2pos "$title" "," "Room")
-    	sanRoom=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
-    	pos=$(val2pos "$title" "," "Port Name")
-    	sanPName=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
-    	pos=$(val2pos "$title" "," "Port#+")
-    	sanPNum=`cat "../sansw/sansw_rep.csv" | grep "$hostWWN" | cut -d, -f$pos`
-    	sanPNum="     $sanPNum"; sanPNum=${sanPNum:(${#sanPNum}-2)}
+	#sansw.sh - Date,Room,Fabric+,Switch Name+,Domen+,IP,Switch WWN,Model,Firmware,Serial#,Config,Port#+,Port Name,Speed+,Status,State,Type,Port WWN,Device WWPN,Alias,Zone,SFP#+,Wave+,SFP Vendor,SFP Serial#,SFP Speed
+    	title=$( cat "$Fsansw" | head -n 1 )
 
+    	#do not check port with more 1 WWPN, for exclude NPIV
+    	pos=$(val2pos "$title" "," "Device WWPN")
+    	sanWWPN=`cat "$Fsansw" | grep "$hostWWN" | cut -d, -f$pos`
+    	sanWWPN="${sanWWPN//"; "/"\n"}"
+    	sanWWPNcount=`echo -n "$sanWWPN" | wc -l`
+    	if [[ sanWWPNcount -gt 1 ]]; then continue; fi
+
+    	pos=$(val2pos "$title" "," "Switch Name+")
+    	sanName=`cat "$Fsansw" | grep "$hostWWN" | cut -d, -f$pos`
+    	pos=$(val2pos "$title" "," "Room")
+    	sanRoom=`cat "$Fsansw" | grep "$hostWWN" | cut -d, -f$pos`
+    	pos=$(val2pos "$title" "," "Port Name")
+    	sanPName=`cat "$Fsansw" | grep "$hostWWN" | cut -d, -f$pos`
+    	pos=$(val2pos "$title" "," "Port#+")
+    	sanPNum=`cat "$Fsansw" | grep "$hostWWN" | cut -d, -f$pos`
+    	sanPNum="     $sanPNum"; sanPNum=${sanPNum:(${#sanPNum}-2)}
+    	
     	if [[ "$hostName" != "$sanPName" ]]
     	then
     	    x="${sanRoom}, ${sanName}"
     	    if [[ "$x" == ", " ]]; then x="-"; fi
     	    xl=${#x}
-    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
 	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
@@ -1977,8 +1993,6 @@ then
     	    x="[${sanPNum}] $sanPName"
     	    if [[ "$x" == "[  ] " ]]; then x="  -  "; fi
     	    xl=${#x}
-    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
 	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
@@ -1988,8 +2002,6 @@ then
     	    x="$hostName"
     	    if [[ "$x" == "" ]]; then x="-"; fi
     	    xl=${#x}
-    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
 	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
@@ -2004,7 +2016,6 @@ then
     then
         echo "Processing SAN PortName and HostName" >> $Fout3
         echo "------------------------------------" >> $Fout3
-        echo "" >> $Fout3
         cat $Ftmp2 >> $Fout3
         echo "" >> $Fout3
         echo "" >> $Fout3
@@ -2048,8 +2059,6 @@ then
     		i=`grep -P "$prevWWN\t$prevhost" "$Ftmp.wwnhost" | wc -l`
     		x="$i $prevhost"
         	xl=${#x}
-    		#if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    		#if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
 		if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
     		if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
     		if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
@@ -2061,8 +2070,6 @@ then
     	    i=`grep -P "$curWWN\t$curhost" "$Ftmp.wwnhost" | wc -l`
     	    x="$i $curhost"
             xl=${#x}
-    	    #if [[ $xl -lt 48 ]]; then x="${x}\t"; fi
-    	    #if [[ $xl -lt 40 ]]; then x="${x}\t"; fi
 	    if [[ $xl -lt 32 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 24 ]]; then x="${x}\t"; fi
     	    if [[ $xl -lt 16 ]]; then x="${x}\t"; fi
@@ -2073,7 +2080,7 @@ then
     	    index=$(($index+1))
     	    continue
     	else
-    	    if [[ $index -gt 0 ]]; then echo "" >> $Ftmp2; fi
+    	    if [[ $index -gt 0 ]]; then echo "-" >> $Ftmp2; fi
     	    index=0
     	fi
     	prevWWN="$curWWN"
@@ -2087,8 +2094,7 @@ then
     then
 	echo "Processing WWN and HostName" >> $Fout3
 	echo "---------------------------" >> $Fout3
-	echo "" >> $Fout3
-	cat $Ftmp2 >> $Fout3
+	if [[ "$(tail -n 1 $Ftmp2)" != "-" ]]; then cat $Ftmp2 >> $Fout3; else cat $Ftmp2 | head -n -1 >> $Fout3; fi
 	echo "" >> $Fout3
 	echo "" >> $Fout3
     fi
@@ -2103,20 +2109,25 @@ then
     echo -n "Converting report file CSV to XLS..."
     eval "../csv2xls/csv2xls.pl $Fout $FoutXLS"
     echo " end"
+    echo -n "Converting report file CSV for DataBase to XLS..."
+    eval "../csv2xls/csv2xls.pl $FoutDB $FoutDBXLS"
+    echo " end"
 fi
 
 if [[ -f "../smb/smbupload.sh" ]]
 then
     echo "Upload to Inventory share.."
-    eval "../smb/smbupload.sh storsw $Fout $FoutXLS $Fout2 $Fout3"
+    eval "../smb/smbupload.sh storsw $Fout $FoutDB $FoutXLS $FoutDBXLS $Fout2 $Fout3"
     echo "..end"
 fi
-            
+
 if [[ -f "../csv2mysql/csv2mysql.pl" ]]
 then
-    # Room,Name+,IP,Firmware+,Capacity,Used,Free,WWNs,Ctrl#+,Ctrl WWPN,Speed,Status+,Encl#+,Status+,Type,PN#,Serial#,Slots,Speed,Encl#+,Bay#+,Status+,Type,Mode,Size,Speed+,PN#,Serial#,Disk Group,Status+,Size,Free,Volume Name,Status+,Size,WWID+,Mapping,Disk Group,Func+,Host Name,Status+,Ports+,WWPN,Mapping
+    # Date,Room,Name+,IP,Firmware+,Capacity-,Used-,Free-,WWN,Ctrl#+,Ctrl WWPN,Ctrl Speed+,Ctrl Status+,Encl#+,Encl Status+,Encl Type,Encl PN#,Encl Serial#,Slots,Bkpl Speed,
+    # Disk Encl#+,Disk Bay#+,Disk Status+,Disk Type,Disk Mode,Disk Size,Disk Speed+,Disk PN#,Disk Serial#,Disk Group,DG Status+,DG Size,DG Free,
+    # Volume Name,Vol Status+,Vol Size,Volume WWID+,Volume Mapping,Vol DG,Func+,Host Name,Host Status+,Ports+,Device WWPN,Host Mapping
     echo "Upload to MySQL base.."
-    eval "../csv2mysql/csv2mysql.pl storsw_rep.csv storage \"Name+,Room\" \"field1,field2\""
+    eval "../csv2mysql/csv2mysql.pl $FoutDB storage \"Date,Name+,Room\" \"date,field1,field2\""
     echo "..end"
 fi
 
@@ -2127,4 +2138,3 @@ if [[ -f $FtmpV ]]; then rm $FtmpV; fi
 
 #if [[ -f $Flog ]]; then rm $Flog; fi
 
-exit;
